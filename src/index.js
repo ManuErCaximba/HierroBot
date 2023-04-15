@@ -44,7 +44,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
 });
 
-keepAlive();
+//keepAlive();
 client.login(process.env.TOKEN);
 
 // Functions
