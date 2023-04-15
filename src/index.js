@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Client, IntentsBitField } = require('discord.js');
-const { Info, DateTuple } = require('./model')
+const { Info, DateTuple } = require('./model');
+const keepAlive = require('./server');
 
 const client = new Client({
     intents: [
@@ -43,6 +44,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
 });
 
+keepAlive();
 client.login(process.env.TOKEN);
 
 // Functions
