@@ -18,6 +18,7 @@ let infoStored;
 let dataChannel;
 let logChannel;
 let msgPromise;
+let msgId;
 
 // Bot Interactions
 
@@ -44,7 +45,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
 });
 
-//keepAlive();
+keepAlive();
 client.login(process.env.TOKEN);
 
 // Functions
@@ -52,7 +53,9 @@ client.login(process.env.TOKEN);
 async function fetchInfoStored() {
     const msg = await dataChannel.messages.fetch({ limit: 1 });
     try {
-        return JSON.parse(msg.entries().next().value[1].content);
+        const msgEntry = msg.entries().next();
+        msgId = msgEntry.value[0];
+        return JSON.parse(msgEntry.value[1].content);
     } catch (e) {
         return [];
     }
@@ -74,7 +77,7 @@ async function saveInfoStored(data, member) {
                 const memberInfoStored = infoStored[elemIndex];
                 const dataUpdated = await updateData(memberInfoStored, data);
                 const isUpdated = JSON.stringify(dataUpdated) === JSON.stringify(data) ? false : true;
-                await updateDataEntries(memberInfoStored);
+                memberInfoStored.data = await updateDataEntries(memberInfoStored);
                 if (isUpdated) {
                     memberInfoStored.data.pop();
                 }
@@ -83,7 +86,7 @@ async function saveInfoStored(data, member) {
                 });
                 infoStored.splice(elemIndex, 1, memberInfoStored);
             }
-            msgPromise.edit(JSON.stringify(infoStored));
+            editMessage(infoStored);
         }
     } catch (e) {
         await logChannel.send(e);
@@ -94,17 +97,17 @@ function updateDataEntries(memberInfoStored) {
     const dataStored = [...memberInfoStored.data];
     memberInfoStored.data.every((elem) => {
         const dateSplitted = elem.date.split("-");
-        const elemDate = new Date(dateSplitted[2], dateSplitted[1], dateSplitted[0]);
+        const elemDate = new Date(dateSplitted[2], dateSplitted[1] - 1, dateSplitted[0]);
         const lastDayCounted = new Date();
-        lastDayCounted.setDate(lastDayCounted - process.env.DAYS_CHECKED);
-        if (elemDate >= lastDayCounted) {
+        lastDayCounted.setDate(lastDayCounted.getDate() - process.env.DAYS_CHECKED);
+        if (elemDate <= lastDayCounted) {
             dataStored.shift();
         } else {
             return false;
         }
         return true;
     });
-    memberInfoStored.data = dataStored;
+    return dataStored;
 }
 
 function updateData(memberInfoStored, data) {
@@ -143,6 +146,16 @@ async function fetchData(member) {
         }
     } catch (e) {
         await logChannel.send(e);
+    }
+}
+
+function editMessage(infoStored) {
+    try {
+        msgPromise.edit(JSON.stringify(infoStored));
+    } catch (e) {
+        dataChannel.messages.fetch(msgId).then((msg) => {
+            msg.edit(JSON.stringify(infoStored));
+        });
     }
 }
 
