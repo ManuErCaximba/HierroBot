@@ -1,16 +1,10 @@
-class Info {
-    constructor(id, displayName) {
-        this.id = id;
-        this.displayName = displayName;
-        this.data = null;
-    }
-}
-
 class DateTuple {
-    constructor(date, time) {
+    constructor(id, memberId, date, millisec) {
+        this.id = id
+        this.memberId = memberId;
         this.date = date;
-        this.time = time;
+        this.millisec = millisec;
     }
 }
 
-module.exports = {Info, DateTuple};
+module.exports = {DateTuple};

@@ -1,6 +1,10 @@
 require('dotenv').config();
+
+const crypto = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
 const { Client, IntentsBitField } = require('discord.js');
 const { Info, DateTuple } = require('./model');
+
 const keepAlive = require('./server');
 
 const client = new Client({
@@ -13,36 +17,37 @@ const client = new Client({
     ],
 });
 
-const users = new Map();
-let infoStored;
-let dataChannel;
-let logChannel;
-let msgPromise;
-let msgId;
+let supabase;
 
 // Bot Interactions
 
 client.on('ready', async (c) => {
-    dataChannel = client.channels.cache.get('1094541717006454805');
-    logChannel = client.channels.cache.get('1096893907230523402');
     console.log(`${c.user.tag} is online.`);
-    infoStored = await fetchInfoStored();
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
         const member = oldState.member || newState.member;
+        let { data: info, error } = await supabase.from('Info').select('*').eq('id', Number(member.id));
+
         if (!member) return;
     
         if (!newState.channel && oldState.channel) {
-            let data = await fetchData(member);
-            if (data.length === 0) return;
-            saveInfoStored(data, member);
+            saveInfoStored(info, member);
         } else if (!oldState.channel && newState.channel) {
-            const now = new Date();
-            const startTime = now.getTime();
-            const startDate = now.getDate() + "-" + (now.getMonth() + 1) + "-" + now.getFullYear();
-            users.set(member.id, new DateTuple(startDate, startTime));
+            if (info.length === 0) {
+                await supabase.from('Info').insert([
+                    {
+                        id: Number(member.id),
+                        displayName: member.displayName,
+                        lastChecked: new Date()
+                    },]);
+            } else {
+                await supabase.from('Info')
+                    .update({ lastChecked: new Date() })
+                    .eq('id', Number(member.id));
+            }
         }
     } catch (e) {
         await logChannel.send(e.stack);
@@ -55,115 +60,52 @@ client.login(process.env.TOKEN);
 
 // Functions
 
-async function fetchInfoStored() {
-    const msg = await dataChannel.messages.fetch({ limit: 1 });
+async function saveInfoStored(info) {
     try {
-        const msgEntry = msg.entries().next();
-        msgId = msgEntry.value[0];
-        return JSON.parse(msgEntry.value[1].content);
-    } catch (e) {
-        return [];
-    }
-}
-
-async function saveInfoStored(data, member) {
-    const info = new Info(member.id, member.displayName);
-    if (infoStored.length === 0) {
-        info.data = data
-        infoStored = [info];
-        msgPromise = await dataChannel.send(JSON.stringify(infoStored));
-    } else {
-        let elemIndex = await findElementIndex(infoStored, info.id);
-        if (elemIndex === undefined || elemIndex === null) {
-            info.data = data
-            infoStored.push(info);
-        } else {
-            const memberInfoStored = infoStored[elemIndex];
-            const dataUpdated = await updateData(memberInfoStored, data);
-            const isUpdated = JSON.stringify(dataUpdated) === JSON.stringify(data) ? false : true;
-            memberInfoStored.data = await updateDataEntries(memberInfoStored);
-            if (isUpdated) {
-                memberInfoStored.data.pop();
+        const infoToSave = generateDateTuples(info);
+        infoToSave.forEach(async (elem) => {
+            let {data: dateTuple, error} = await supabase.from('DateTuple').select('*')
+                .eq('memberId', elem.memberId)
+                .eq('date', elem.date);
+            if (dateTuple.length === 0) {
+                await supabase.from('DateTuple').insert([
+                    {
+                        id: elem.id,
+                        memberId: elem.memberId,
+                        date: elem.date,
+                        millisec: elem.millisec
+                    },]);
+            } else {
+                await supabase.from('DateTuple')
+                    .update({ millisec: dateTuple[0].millisec + elem.millisec })
+                    .eq('id', dateTuple[0].id);
             }
-            dataUpdated.forEach((elem) => {
-                memberInfoStored.data.push(elem);
-            });
-            infoStored.splice(elemIndex, 1, memberInfoStored);
-        }
-        editMessage(infoStored);
-    }
-}
-
-function updateDataEntries(memberInfoStored) {
-    const dataStored = [...memberInfoStored.data];
-    memberInfoStored.data.every((elem) => {
-        const dateSplitted = elem.date.split("-");
-        const elemDate = new Date(dateSplitted[2], dateSplitted[1] - 1, dateSplitted[0]);
-        const lastDayCounted = new Date();
-        lastDayCounted.setDate(lastDayCounted.getDate() - process.env.DAYS_CHECKED);
-        if (elemDate <= lastDayCounted) {
-            dataStored.shift();
-        } else {
-            return false;
-        }
-        return true;
-    });
-    return dataStored;
-}
-
-function updateData(memberInfoStored, data) {
-    const dataStored = memberInfoStored.data;
-    const lastDayStored = dataStored[dataStored.length - 1].date;
-    if (data[0].date === lastDayStored) {
-        let lastDayTimeUpdated = dataStored[dataStored.length - 1].time;
-        lastDayTimeUpdated += data[0].time;
-        if (data.length === 1) {
-            return [new DateTuple(lastDayStored, lastDayTimeUpdated)];
-        } else {
-            return [new DateTuple(lastDayStored, lastDayTimeUpdated), new DateTuple(data[1].date, data[1].time)];
-        }
-    } else {
-        return data;
-    }
-}
-
-async function fetchData(member) {
-    const startTime = users.get(member.id).time;
-    const startDate = users.get(member.id).date;
-    if (!startTime) return [];
-
-    const now = new Date();
-    const endDate = now.getDate() + "-" + (now.getMonth() + 1) + "-" + now.getFullYear();
-    if (startDate === endDate) {
-        const totalTime = now.getTime() - startTime;
-        return [new DateTuple(startDate, totalTime)];
-    } else {
-        const atZeroTime = now;
-        atZeroTime.setHours(0, 0, 0, 0);
-        const todayTime = now.getTime() - atZeroTime;
-        const yesterdayTime = atZeroTime - startTime;
-        return [new DateTuple(startDate, yesterdayTime), new DateTuple(endDate, todayTime)];
-    }
-}
-
-function editMessage(infoStored) {
-    try {
-        msgPromise.edit(JSON.stringify(infoStored));
-    } catch (e) {
-        dataChannel.messages.fetch(msgId).then((msg) => {
-            msg.edit(JSON.stringify(infoStored));
         });
+    } catch (e) {
+        console.log(e.stack);
     }
 }
 
-function findElementIndex(arr, id) {
-    let elemIndex;
-    arr.every((elem, index) => {
-        if (elem.id == id) {
-            elemIndex = index;
-            return false;
+function generateDateTuples(info) {
+    try {
+        const infoToSave = []
+        const lastChecked = new Date(info[0].lastChecked);
+        const now = new Date();
+        const todayDate = now.getFullYear() + "/" + (now.getMonth() + 1) + "/" + now.getDate();
+        if (now.getDate() !== lastChecked.getDate()) {
+            let atZero = new Date();
+            atZero.setHours(0, 0, 0, 0);
+            const todayTime = now - atZero;
+            const yesterdayTime = atZero - lastChecked;
+            const yesterdayDate = lastChecked.getFullYear() + "/" + (lastChecked.getMonth() + 1) + "/" + lastChecked.getDate();
+            infoToSave.push(new DateTuple(crypto.randomUUID(), info[0].id, yesterdayDate, yesterdayTime));
+            infoToSave.push(new DateTuple(crypto.randomUUID(), info[0].id, todayDate, todayTime));
+        } else {
+            const todayTime = now - lastChecked;
+            infoToSave.push(new DateTuple(crypto.randomUUID(), info[0].id, todayDate, todayTime));
         }
-        return true;
-    });
-    return elemIndex;
+        return infoToSave;
+    } catch (e) {
+        console.log(e.stack);
+    }
 }
