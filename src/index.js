@@ -25,8 +25,8 @@ let supabase;
 client.on('ready', async (c) => {
     console.log(`${c.user.tag} is online.`);
     supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-    schedule.scheduleJob('0 10 */1 */1 *', assignBrontosaurios);
-    schedule.scheduleJob('0 10 1 */1 *', assignForaneos);
+    schedule.scheduleJob('0 0 10 * * *', assignBrontosaurios);
+    schedule.scheduleJob('0 0 10 1 * *', assignForaneos);
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
@@ -38,23 +38,13 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     
         if (!newState.channel && oldState.channel) {
             saveInfoStored(info, member);
+            updateLastChecked(info, member)
         } else if (!oldState.channel && newState.channel) {
-            if (info.length === 0) {
-                await supabase.from('Info').insert([
-                    {
-                        id: Number(member.id),
-                        displayName: member.displayName,
-                        lastChecked: new Date()
-                    },]);
-            } else {
-                await supabase.from('Info')
-                    .update({ lastChecked: new Date() })
-                    .eq('id', Number(member.id));
-            }
+            updateLastChecked(info, member)
         }
-    } catch (e) {
-        await logChannel.send(e.stack);
-    }
+   } catch (e) {
+       await logChannel.send(e.stack);
+   }
     
 });
 
@@ -63,26 +53,32 @@ client.login(process.env.TOKEN);
 
 // Functions
 
+async function updateLastChecked(info, member) {
+    if (info.length === 0) {
+        await supabase.from('Info').insert([
+            {
+                id: Number(member.id),
+                displayName: member.displayName,
+                lastChecked: new Date()
+            },]);
+    } else {
+        await supabase.from('Info')
+            .update({ lastChecked: new Date() })
+            .eq('id', Number(member.id));
+    }
+}
+
 async function saveInfoStored(info) {
     try {
         const infoToSave = generateDateTuples(info);
         infoToSave.forEach(async (elem) => {
-            let {data: dateTuple, error} = await supabase.from('DateTuple').select('*')
-                .eq('memberId', elem.memberId)
-                .eq('date', elem.date);
-            if (dateTuple.length === 0) {
-                await supabase.from('DateTuple').insert([
-                    {
-                        id: elem.id,
-                        memberId: elem.memberId,
-                        date: elem.date,
-                        millisec: elem.millisec
-                    },]);
-            } else {
-                await supabase.from('DateTuple')
-                    .update({ millisec: dateTuple[0].millisec + elem.millisec })
-                    .eq('id', dateTuple[0].id);
-            }
+            await supabase.from('DateTuple').insert([
+                {
+                    id: elem.id,
+                    memberId: elem.memberId,
+                    date: elem.date,
+                    millisec: elem.millisec
+                },]);
         });
     } catch (e) {
         console.log(e.stack);
@@ -92,7 +88,8 @@ async function saveInfoStored(info) {
 function generateDateTuples(info) {
     try {
         const infoToSave = []
-        const lastChecked = new Date(info[0].lastChecked);
+        let lastChecked = new Date(info[0].lastChecked);
+        lastChecked.setDate(lastChecked.getDate() - 1);
         const now = new Date();
         const todayDate = now.getFullYear() + "/" + (now.getMonth() + 1) + "/" + now.getDate();
         if (now.getDate() !== lastChecked.getDate()) {
@@ -127,18 +124,20 @@ async function assignBrontosaurios() {
     monthAgo.setDate(monthAgo.getDate() - process.env.DAYS_CHECKED);
     userIds.forEach(async elem => {
         const member = await members.filter(m => m.id == elem.id)[0]
+        const b = member.displayName;
+        const a = monthAgo.getTime();
         let { data: millisecs, error } = await supabase.from('DateTuple').select('millisec').eq('memberId', elem.id).gte('date', (monthAgo.toISOString()).toLocaleString('es-ES'));
         let total = 0;
         millisecs.forEach(elem => {
-            total += elem.millisec;
+            total += elem.millisec > 36000000 ? 36000000 : elem.millisec;
         });
         const hours = total / 3600000;
         if (hours >= process.env.BRONTOSAURIO_MIN) {
-            // member.roles.add(brontosaurio);
-            console.log('a')
+            member.roles.add(brontosaurio);
+            // console.log(member.displayName + ": " + hours + " (Poner bronto)");
         } else {
-            // member.roles.remove(brontosaurio);
-            console.log('a')
+            member.roles.remove(brontosaurio);
+            // console.log(member.displayName + ": " + hours + " (Quitar bronto)")
         }
     });
 }
@@ -157,8 +156,11 @@ async function assignForaneos() {
         let { data: userBDIds, error } = await supabase.from('Info').select('id').eq('id', id);
         const member = await members.filter(m => m.id == id)[0]
         if (userBDIds.length === 0) {
-            // member.roles.add(foraneo);
-            console.log('b')
+            const joinedAtMs = new Date().getTime() - member.joinedAt.getTime();
+            if (joinedAtMs > (86400000 * process.env.DAYS_CHECKED)) {
+                member.roles.add(foraneo);
+                // console.log(member.displayName + ": " + 0 + " (Poner foraneo)")
+            }
         } else {
             let { data: millisecs, error } = await supabase.from('DateTuple').select('millisec').eq('memberId', id).gte('date', (monthAgo.toISOString()).toLocaleString('es-ES'));
             let total = 0;
@@ -167,8 +169,11 @@ async function assignForaneos() {
             });
             const hours = total / 3600000;
             if (hours <= process.env.FORANEO_MIN) {
-                // member.roles.add(foraneo);
-                console.log('b')
+                const joinedAtMs = new Date().getTime() - member.joinedAt.getTime();
+                if (joinedAtMs > (86400000 * process.env.DAYS_CHECKED)) {
+                    member.roles.add(foraneo);
+                    // console.log(member.displayName + ": " + 0 + " (Poner foraneo)")
+                }
             }
         }
     }
