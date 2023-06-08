@@ -1,15 +1,17 @@
 require('dotenv').config();
 
+const fs = require('node:fs');
+const path = require('node:path');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
-const { Client, IntentsBitField } = require('discord.js');
-const { Info, DateTuple } = require('./model');
+const { Client, IntentsBitField, GatewayIntentBits, Events, Collection } = require('discord.js');
 const schedule = require('node-schedule');
 
 const keepAlive = require('./server');
 
 const client = new Client({
     intents: [
+        GatewayIntentBits.Guilds,
         IntentsBitField.Flags.Guilds,
         IntentsBitField.Flags.GuildMembers,
         IntentsBitField.Flags.GuildMessages,
@@ -17,6 +19,25 @@ const client = new Client({
         IntentsBitField.Flags.MessageContent,
     ],
 });
+
+client.commands = new Collection();
+const foldersPath = path.join(__dirname, 'commands');
+const commandFolders = fs.readdirSync(foldersPath);
+
+for (const folder of commandFolders) {
+	const commandsPath = path.join(foldersPath, folder);
+	const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+	for (const file of commandFiles) {
+		const filePath = path.join(commandsPath, file);
+		const command = require(filePath);
+		// Set a new item in the Collection with the key as the command name and the value as the exported module
+		if ('data' in command && 'execute' in command) {
+			client.commands.set(command.data.name, command);
+		} else {
+			console.log(`[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`);
+		}
+	}
+}
 
 let supabase;
 
@@ -27,17 +48,21 @@ client.on('ready', async (c) => {
     supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
     schedule.scheduleJob('0 0 10 * * *', assignBrontosaurios);
     schedule.scheduleJob('0 0 10 1 * *', assignForaneos);
+    //await assignBrontosaurios();
+    //await assignForaneos();
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
         const member = oldState.member || newState.member;
-        let { data: info, error } = await supabase.from('Info').select('*').eq('id', Number(member.id));
+        let { data: info, error } = await supabase.from('Info').select('*').eq('memberId', member.id);
 
         if (!member) return;
     
         if (!newState.channel && oldState.channel) {
-            saveInfoStored(info, member);
+            const createdAt = await info[0].lastChecked;
+            // saveInfoStored(info, member);
+            insertEntry(createdAt, member)
             updateLastChecked(info, member)
         } else if (!oldState.channel && newState.channel) {
             updateLastChecked(info, member)
@@ -51,130 +76,130 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 keepAlive();
 client.login(process.env.TOKEN);
 
+// Bot slash commands
+
+client.on(Events.InteractionCreate, async interaction => {
+	if (!interaction.isChatInputCommand()) return;
+
+    if (!interaction.isCommand()) return;
+
+	if (interaction.commandName === 'change') {
+        const subcommandName = interaction.options.getSubcommand();
+		if (!(subcommandName === 'name' || subcommandName === 'color')) {
+			await interaction.followUp({ content: 'Hubo un error ejecutando el comando', ephemeral: true });
+		}
+	} else if (interaction.commandName !== 'ping') {
+        await interaction.followUp({ content: 'Hubo un error ejecutando el comando', ephemeral: true });
+    }
+
+	try {
+		await client.commands.get(interaction.commandName).execute(interaction);
+	} catch (error) {
+		console.error(error);
+		if (interaction.replied || interaction.deferred) {
+			await interaction.followUp({ content: 'Hubo un error ejecutando el comando', ephemeral: true });
+		} else {
+			await interaction.reply({ content: error, ephemeral: true });
+		}
+	}
+});
+
 // Functions
 
+async function insertEntry(createdAt, member) {
+    let { data: entry, error } = await supabase.from('Entry').insert([
+        {
+            id: crypto.randomUUID(),
+            memberId: member.id,
+            createdAt: new Date(Date.parse(createdAt)),
+            finishedAt: new Date()
+        },]);
+    if (error) {
+        console.log(error);
+    }
+}
+
 async function updateLastChecked(info, member) {
+    const lastChecked = new Date();
     if (info.length === 0) {
         await supabase.from('Info').insert([
             {
-                id: Number(member.id),
+                memberId: member.id,
                 displayName: member.displayName,
-                lastChecked: new Date()
+                lastChecked: lastChecked
             },]);
     } else {
         await supabase.from('Info')
-            .update({ lastChecked: new Date() })
-            .eq('id', Number(member.id));
-    }
-}
-
-async function saveInfoStored(info) {
-    try {
-        const infoToSave = generateDateTuples(info);
-        infoToSave.forEach(async (elem) => {
-            await supabase.from('DateTuple').insert([
-                {
-                    id: elem.id,
-                    memberId: elem.memberId,
-                    date: elem.date,
-                    millisec: elem.millisec
-                },]);
-        });
-    } catch (e) {
-        console.log(e.stack);
-    }
-}
-
-function generateDateTuples(info) {
-    try {
-        const infoToSave = []
-        let lastChecked = new Date(info[0].lastChecked);
-        lastChecked.setDate(lastChecked.getDate() - 1);
-        const now = new Date();
-        const todayDate = now.getFullYear() + "/" + (now.getMonth() + 1) + "/" + now.getDate();
-        if (now.getDate() !== lastChecked.getDate()) {
-            let atZero = new Date();
-            atZero.setHours(0, 0, 0, 0);
-            const todayTime = now - atZero;
-            const yesterdayTime = atZero - lastChecked;
-            const yesterdayDate = lastChecked.getFullYear() + "/" + (lastChecked.getMonth() + 1) + "/" + lastChecked.getDate();
-            infoToSave.push(new DateTuple(crypto.randomUUID(), info[0].id, yesterdayDate, yesterdayTime));
-            infoToSave.push(new DateTuple(crypto.randomUUID(), info[0].id, todayDate, todayTime));
-        } else {
-            const todayTime = now - lastChecked;
-            infoToSave.push(new DateTuple(crypto.randomUUID(), info[0].id, todayDate, todayTime));
-        }
-        return infoToSave;
-    } catch (e) {
-        console.log(e.stack);
+            .update({ displayName: member.displayName, lastChecked: lastChecked })
+            .eq('memberId', member.id);
     }
 }
 
 async function assignBrontosaurios() {
-    let { data: userBDIds, error } = await supabase.from('Info').select('id');
     const rthGuild = await client.guilds.cache.get(process.env.STG_SERVER_ID);
-    const userGuildIds = Array.from((await rthGuild.members.fetch())
+    const members = Array.from((await rthGuild.members.fetch())
         .filter(m => m._roles.includes('996053691704545362'))
-        .map(m => Number(m.id))
         .values());
-    const members = Array.from((await rthGuild.members.fetch()).values());
-    const userIds = userBDIds.filter(value => userGuildIds.includes(value.id));
     const brontosaurio = await rthGuild.roles.fetch('1013023706609635398')
     const monthAgo = new Date();
     monthAgo.setDate(monthAgo.getDate() - process.env.DAYS_CHECKED);
-    userIds.forEach(async elem => {
-        const member = await members.filter(m => m.id == elem.id)[0]
-        const b = member.displayName;
-        const a = monthAgo.getTime();
-        let { data: millisecs, error } = await supabase.from('DateTuple').select('millisec').eq('memberId', elem.id).gte('date', (monthAgo.toISOString()).toLocaleString('es-ES'));
+    members.forEach(async member => {
+        let { data: entries, error } = await supabase.from('Entry').select('*').eq('memberId', member.id);
         let total = 0;
-        millisecs.forEach(elem => {
-            total += elem.millisec > 36000000 ? 36000000 : elem.millisec;
+        let totalMonth = 0;
+        entries.forEach(elem => {
+            const createdAt = Date.parse(elem.createdAt);
+            const finishedAt = Date.parse(elem.finishedAt);
+            total += (finishedAt - createdAt) > 36000000 ? 36000000 : (finishedAt - createdAt);
+            if (createdAt > monthAgo.getTime()) {
+                totalMonth += (finishedAt - createdAt) > 36000000 ? 36000000 : (finishedAt - createdAt);
+            }
         });
         const hours = total / 3600000;
-        if (hours >= process.env.BRONTOSAURIO_MIN) {
+        const hoursMonth = totalMonth / 3600000;
+        if (hours >= process.env.BRONTOSAURIO_MIN && hoursMonth >= process.env.BRONTOSAURIO_MONTH_MIN) {
             member.roles.add(brontosaurio);
-            // console.log(member.displayName + ": " + hours + " (Poner bronto)");
+            //console.log(member.displayName + ": " + hours + "/" + hoursMonth + " (Poner bronto)");
         } else {
             member.roles.remove(brontosaurio);
-            // console.log(member.displayName + ": " + hours + " (Quitar bronto)")
+            //console.log(member.displayName + ": " + hours + "/" + hoursMonth + " (Quitar bronto)")
         }
     });
 }
 
 async function assignForaneos() {
     const rthGuild = await client.guilds.cache.get(process.env.STG_SERVER_ID);
-    const userGuildIds = Array.from((await rthGuild.members.fetch())
+    const members = Array.from((await rthGuild.members.fetch())
         .filter(m => m._roles.includes('996053691704545362'))
-        .map(m => Number(m.id))
         .values());
-    const members = Array.from((await rthGuild.members.fetch()).values());
     const foraneo = await rthGuild.roles.fetch('1025751725778415638')
-    const monthAgo = new Date();
-    monthAgo.setDate(monthAgo.getDate() - process.env.DAYS_CHECKED);
-    for (var id of userGuildIds) {
-        let { data: userBDIds, error } = await supabase.from('Info').select('id').eq('id', id);
-        const member = await members.filter(m => m.id == id)[0]
-        if (userBDIds.length === 0) {
+    members.forEach(async member => {
+        let { data: entries, error } = await supabase.from('Entry').select('*').eq('memberId', member.id);
+        if (entries.length === 0) {
             const joinedAtMs = new Date().getTime() - member.joinedAt.getTime();
             if (joinedAtMs > (86400000 * process.env.DAYS_CHECKED)) {
                 member.roles.add(foraneo);
-                // console.log(member.displayName + ": " + 0 + " (Poner foraneo)")
+                //console.log(member.displayName + ": " + 0 + " (Poner foraneo)")
             }
         } else {
-            let { data: millisecs, error } = await supabase.from('DateTuple').select('millisec').eq('memberId', id).gte('date', (monthAgo.toISOString()).toLocaleString('es-ES'));
-            let total = 0;
-            millisecs.forEach(elem => {
-                total += elem.millisec;
+            const monthAgo = new Date();
+            monthAgo.setDate(monthAgo.getDate() - process.env.DAYS_CHECKED);
+            let totalMonth = 0;
+            entries.forEach(elem => {
+                const createdAt = Date.parse(elem.createdAt);
+                const finishedAt = Date.parse(elem.finishedAt);
+                if (createdAt > monthAgo.getTime()) {
+                    totalMonth += (finishedAt - createdAt) > 36000000 ? 36000000 : (finishedAt - createdAt);
+                }
             });
-            const hours = total / 3600000;
+            const hours = totalMonth / 3600000;
             if (hours <= process.env.FORANEO_MIN) {
                 const joinedAtMs = new Date().getTime() - member.joinedAt.getTime();
                 if (joinedAtMs > (86400000 * process.env.DAYS_CHECKED)) {
                     member.roles.add(foraneo);
-                    // console.log(member.displayName + ": " + 0 + " (Poner foraneo)")
+                    //console.log(member.displayName + ": " + hours + " (Poner foraneo)")
                 }
             }
         }
-    }
+    })
 }
